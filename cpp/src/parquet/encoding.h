@@ -304,6 +304,13 @@ class TypedDecoder : virtual public Decoder {
     }
   }
 
+  // Decoder that returns bit map where ones represent that 
+  // value satisfies condition given by the function 
+  virtual int GetFilteredBitmap(std::vector<bool>& bit_mask, int batch_size,
+                                   bool (*func)(T)) {
+    return 0;
+  }
+
   /// \brief Decode into an ArrayBuilder or other accumulator
   ///
   /// This function assumes the definition levels were already decoded
@@ -345,6 +352,7 @@ class TypedDecoder : virtual public Decoder {
                          typename EncodingTraits<DType>::DictAccumulator* builder) {
     return DecodeArrow(num_values, 0, /*valid_bits=*/NULLPTR, 0, builder);
   }
+
 };
 
 template <typename DType>

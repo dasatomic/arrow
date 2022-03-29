@@ -1592,6 +1592,18 @@ class DictDecoderImpl : public DecoderImpl, virtual public DictDecoder<Type> {
     *dictionary = reinterpret_cast<T*>(dictionary_->mutable_data());
   }
 
+  int GetFilteredBitmap(std::vector<bool>& bit_mask, int batch_size, bool (*func)(T)) override {
+    int num_values = std::min(num_values_, batch_size);
+    int decoded_values = idx_decoder_.GetFilteredBitmapWithDict(
+        reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
+        num_values, func);
+    if (decoded_values != num_values) {
+      ParquetException::EofException();
+    }
+    num_values_ -= num_values;
+    return num_values;
+  }
+
  protected:
   Status IndexInBounds(int32_t index) {
     if (ARROW_PREDICT_TRUE(0 <= index && index < dictionary_length_)) {

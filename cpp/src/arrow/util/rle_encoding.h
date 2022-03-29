@@ -138,6 +138,12 @@ class RleDecoder {
                              int batch_size, int null_count, const uint8_t* valid_bits,
                              int64_t valid_bits_offset);
 
+  // Gets a bit_map based on batch of values. Ones represent that corresponding 
+  // value satisfies condition represent by given function 
+  template <typename T>
+  int GetFilteredBitmapWithDict(const T* dictionary, int32_t dictionary_length,
+                                std::vector<bool>& bit_mask, int batch_size,
+                                bool (*func)(T));
  protected:
   bit_util::BitReader bit_reader_;
   /// Number of bits needed to encode the value. Must be between 0 and 64.
@@ -580,7 +586,7 @@ inline int RleDecoder::GetBatchWithDict(const T* dictionary, int32_t dictionary_
       int actual_read = bit_reader_.GetBatch(bit_width_, indices, literal_batch);
       if (ARROW_PREDICT_FALSE(actual_read != literal_batch)) {
         return values_read;
-      }
+      } 
       if (ARROW_PREDICT_FALSE(!converter.IsValid(indices, /*length=*/literal_batch))) {
         return values_read;
       }
@@ -637,6 +643,62 @@ inline int RleDecoder::GetBatchWithDictSpaced(const T* dictionary,
     valid_bits_offset += block.length;
   } while (processed == block.length);
   return total_processed;
+}
+
+template <typename T>
+inline int RleDecoder::GetFilteredBitmapWithDict(const T* dictionary,
+                                                 int32_t dictionary_length,
+                                                 std::vector<bool>& bit_mask,
+                                                 int batch_size, bool (*func) (T)) {
+  DCHECK_GE(bit_width_, 0);
+  int values_read = 0;
+  using IndexType = int32_t;
+
+  while (values_read < batch_size) {
+    int remaining = batch_size - values_read;
+
+    if (repeat_count_ > 0) {
+      auto idx = static_cast<IndexType>(current_value_);
+      if (ARROW_PREDICT_FALSE(!IndexInRange(idx, dictionary_length))) {
+        return values_read;
+      }
+      T val = dictionary[idx];
+
+      int repeat_batch = std::min(remaining, repeat_count_);
+
+      
+      if (func(val)) {
+        for (int i = 0; i < repeat_batch; i++) bit_mask[i + values_read] = true;
+      } 
+
+      repeat_count_ -= repeat_batch;
+      values_read += repeat_batch;
+    } else if (literal_count_ > 0) {
+      constexpr int kBufferSize = 1024;
+      IndexType indices[kBufferSize];
+
+      int literal_batch = std::min(remaining, literal_count_);
+      literal_batch = std::min(literal_batch, kBufferSize);
+
+      int actual_read = bit_reader_.GetBatch(bit_width_, indices, literal_batch);
+      if (ARROW_PREDICT_FALSE(actual_read != literal_batch)) {
+        return values_read;
+      }
+
+      for (int i = 0; i < literal_batch; i++) {
+        T val = dictionary[indices[i]];
+        if (func(val)) 
+          bit_mask[i + values_read] = true;
+      }
+
+      literal_count_ -= literal_batch;
+      values_read += literal_batch;
+    } else {
+      if (!NextCounts<IndexType>()) return values_read;
+    }
+  }
+
+  return values_read;
 }
 
 template <typename T>
