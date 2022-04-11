@@ -21,12 +21,14 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <bitset>
 
 #include "parquet/exception.h"
 #include "parquet/level_conversion.h"
 #include "parquet/platform.h"
 #include "parquet/schema.h"
 #include "parquet/types.h"
+#include "../ewah/ewah.h"
 
 namespace arrow {
 
@@ -248,7 +250,11 @@ class TypedColumnReader : public ColumnReader {
   // Reads filtered bit map where ones represent correcponding 
   // value satisfies condition represent by given function 
   virtual int64_t ReadFilteredBitmap(int16_t* def_levels, int16_t* rep_levels,
-                                     std::vector<bool>& bit_mask, int batch_size,
+                                     std::bitset<1024>& bit_mask, int batch_size,
+                                     bool (*func)(T), int64_t* values_read) = 0;
+
+  virtual int64_t ReadFilteredBitmapEWAH(int16_t* def_levels, int16_t* rep_levels,
+                                     ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
                                      bool (*func)(T), int64_t* values_read) = 0;
 };
 

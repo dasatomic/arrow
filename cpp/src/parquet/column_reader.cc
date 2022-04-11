@@ -51,6 +51,7 @@
 #include "parquet/statistics.h"
 #include "parquet/thrift_internal.h"  // IWYU pragma: keep
 #include "parquet/windows_fixup.h"    // for OPTIONAL
+#include "../ewah/ewah.h"
 
 using arrow::MemoryPool;
 using arrow::internal::AddWithOverflow;
@@ -881,9 +882,14 @@ class TypedColumnReaderImpl : public TypedColumnReader<DType>,
                                   int64_t* indices_read, const T** dict,
                                   int32_t* dict_len) override;
 
-  int64_t ReadFilteredBitmap(
-      int16_t* def_levels, int16_t* rep_levels, std::vector<bool>& bit_mask,
+  int64_t ReadFilteredBitmap(int16_t* def_levels, int16_t* rep_levels,
+                             std::bitset<1024>& bit_mask,
       int batch_size, bool (*func)(T), int64_t* values_read) override; 
+
+  int64_t ReadFilteredBitmapEWAH(int16_t* def_levels, int16_t* rep_levels,
+                                 ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
+                                 bool (*func)(T),
+                             int64_t* values_read) override; 
 
  protected:
   void SetExposedEncoding(ExposedEncoding encoding) override {
@@ -988,8 +994,9 @@ int64_t TypedColumnReaderImpl<DType>::ReadBatchWithDictionary(
 }
 
 template <typename DType>
-int64_t TypedColumnReaderImpl<DType>::ReadFilteredBitmap(
-    int16_t* def_levels, int16_t* rep_levels, std::vector<bool>& bit_mask,
+int64_t TypedColumnReaderImpl<DType>::ReadFilteredBitmap(int16_t* def_levels,
+                                                         int16_t* rep_levels,
+                                                         std::bitset<1024>& bit_mask,
     int batch_size, bool (*func)(T), int64_t* values_read) {
   // HasNext invokes ReadNewPage
   if (!HasNext()) {
@@ -1006,6 +1013,39 @@ int64_t TypedColumnReaderImpl<DType>::ReadFilteredBitmap(
   int64_t total_values = std::max(num_def_levels, *values_read);
   int64_t expected_values =
       std::min(static_cast<int64_t>(batch_size), this->num_buffered_values_ - this->num_decoded_values_);
+  if (total_values == 0 && expected_values > 0) {
+    std::stringstream ss;
+    ss << "Read 0 values, expected " << expected_values;
+    ParquetException::EofException(ss.str());
+  }
+  this->ConsumeBufferedValues(total_values);
+
+  return total_values;
+}
+
+
+template <typename DType>
+int64_t TypedColumnReaderImpl<DType>::ReadFilteredBitmapEWAH(int16_t* def_levels,
+                                                         int16_t* rep_levels, ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                                         int batch_size, bool (*func)(T),
+                                                         int64_t* values_read) {
+  // HasNext invokes ReadNewPage
+  if (!HasNext()) {
+    *values_read = 0;
+    return 0;
+  }
+
+  int64_t num_def_levels = 0;
+  int64_t values_to_read = 0;
+  ReadLevels(batch_size, def_levels, rep_levels, &num_def_levels, &values_to_read);
+
+  *values_read = current_decoder_->GetFilteredBitmapEWAH(
+      bit_mask, static_cast<int>(values_to_read), func);
+
+  int64_t total_values = std::max(num_def_levels, *values_read);
+  int64_t expected_values =
+      std::min(static_cast<int64_t>(batch_size),
+               this->num_buffered_values_ - this->num_decoded_values_);
   if (total_values == 0 && expected_values > 0) {
     std::stringstream ss;
     ss << "Read 0 values, expected " << expected_values;

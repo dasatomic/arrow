@@ -24,12 +24,14 @@
 #include <cmath>
 #include <limits>
 #include <vector>
+#include <bitset>
 
 #include "arrow/util/bit_block_counter.h"
 #include "arrow/util/bit_run_reader.h"
 #include "arrow/util/bit_stream_utils.h"
 #include "arrow/util/bit_util.h"
 #include "arrow/util/macros.h"
+#include "../../ewah/ewah.h"
 
 namespace arrow {
 namespace util {
@@ -142,8 +144,14 @@ class RleDecoder {
   // value satisfies condition represent by given function 
   template <typename T>
   int GetFilteredBitmapWithDict(const T* dictionary, int32_t dictionary_length,
-                                std::vector<bool>& bit_mask, int batch_size,
+                                std::bitset<1024>& bit_mask, int batch_size,
                                 bool (*func)(T));
+
+  template <typename T>
+  int GetFilteredBitmapWithDictEWAH(const T* dictionary, int32_t dictionary_length,
+                                ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
+                                bool (*func)(T));
+
  protected:
   bit_util::BitReader bit_reader_;
   /// Number of bits needed to encode the value. Must be between 0 and 64.
@@ -648,7 +656,7 @@ inline int RleDecoder::GetBatchWithDictSpaced(const T* dictionary,
 template <typename T>
 inline int RleDecoder::GetFilteredBitmapWithDict(const T* dictionary,
                                                  int32_t dictionary_length,
-                                                 std::vector<bool>& bit_mask,
+                                                 std::bitset<1024>& bit_mask,
                                                  int batch_size, bool (*func) (T)) {
   DCHECK_GE(bit_width_, 0);
   int values_read = 0;
@@ -666,10 +674,69 @@ inline int RleDecoder::GetFilteredBitmapWithDict(const T* dictionary,
 
       int repeat_batch = std::min(remaining, repeat_count_);
 
-      
+      bit_mask <<= repeat_batch;
+
       if (func(val)) {
-        for (int i = 0; i < repeat_batch; i++) bit_mask[i + values_read] = true;
-      } 
+        std::bitset<1024> tmp_bit_map;
+        tmp_bit_map.set();
+        tmp_bit_map >>= 1024 - repeat_batch;
+        bit_mask |= tmp_bit_map;
+      }
+
+      repeat_count_ -= repeat_batch;
+      values_read += repeat_batch;
+    } else if (literal_count_ > 0) {
+      constexpr int kBufferSize = 1024;
+      IndexType indices[kBufferSize];
+
+      int literal_batch = std::min(remaining, literal_count_);
+      literal_batch = std::min(literal_batch, kBufferSize);
+
+      int actual_read = bit_reader_.GetBatch(bit_width_, indices, literal_batch);
+      if (ARROW_PREDICT_FALSE(actual_read != literal_batch)) {
+        return values_read;
+      }
+
+      bit_mask <<= literal_batch;
+      for (int i = 0; i < literal_batch; i++) {
+        T val = dictionary[indices[i]];
+        if (func(val))
+            bit_mask.set(i);
+      }
+
+      literal_count_ -= literal_batch;
+      values_read += literal_batch;
+    } else {
+      if (!NextCounts<IndexType>()) return values_read;
+    }
+  }
+
+  return values_read;
+}
+
+
+template <typename T>
+inline int RleDecoder::GetFilteredBitmapWithDictEWAH(const T* dictionary,
+                                                 int32_t dictionary_length,
+                                                 ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                                 int batch_size, bool (*func)(T)) {
+  DCHECK_GE(bit_width_, 0);
+  int values_read = 0;
+  using IndexType = int32_t;
+
+  while (values_read < batch_size) {
+    int remaining = batch_size - values_read;
+
+    if (repeat_count_ > 0) {
+      auto idx = static_cast<IndexType>(current_value_);
+      if (ARROW_PREDICT_FALSE(!IndexInRange(idx, dictionary_length))) {
+        return values_read;
+      }
+      T val = dictionary[idx];
+
+      int repeat_batch = std::min(remaining, repeat_count_);
+
+      bit_mask.fastaddStreamOfBits(func(val), repeat_batch);
 
       repeat_count_ -= repeat_batch;
       values_read += repeat_batch;
@@ -687,8 +754,7 @@ inline int RleDecoder::GetFilteredBitmapWithDict(const T* dictionary,
 
       for (int i = 0; i < literal_batch; i++) {
         T val = dictionary[indices[i]];
-        if (func(val)) 
-          bit_mask[i + values_read] = true;
+        if (func(val)) bit_mask.set(i + values_read);
       }
 
       literal_count_ -= literal_batch;

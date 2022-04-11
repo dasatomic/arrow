@@ -21,12 +21,14 @@
 #include <cstring>
 #include <memory>
 #include <vector>
+#include <bitset>
 
 #include "arrow/util/spaced.h"
 
 #include "parquet/exception.h"
 #include "parquet/platform.h"
 #include "parquet/types.h"
+#include "../ewah/ewah.h"
 
 namespace arrow {
 
@@ -306,8 +308,13 @@ class TypedDecoder : virtual public Decoder {
 
   // Decoder that returns bit map where ones represent that 
   // value satisfies condition given by the function 
-  virtual int GetFilteredBitmap(std::vector<bool>& bit_mask, int batch_size,
+  virtual int GetFilteredBitmap(std::bitset<1024>& bit_mask, int batch_size,
                                    bool (*func)(T)) {
+    return 0;
+  }
+
+  virtual int GetFilteredBitmapEWAH(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
+                                bool (*func)(T)) {
     return 0;
   }
 

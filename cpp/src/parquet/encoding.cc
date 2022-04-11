@@ -49,6 +49,7 @@
 #include "parquet/platform.h"
 #include "parquet/schema.h"
 #include "parquet/types.h"
+#include "../ewah/ewah.h"
 
 namespace bit_util = arrow::bit_util;
 
@@ -1592,9 +1593,23 @@ class DictDecoderImpl : public DecoderImpl, virtual public DictDecoder<Type> {
     *dictionary = reinterpret_cast<T*>(dictionary_->mutable_data());
   }
 
-  int GetFilteredBitmap(std::vector<bool>& bit_mask, int batch_size, bool (*func)(T)) override {
+  int GetFilteredBitmap(std::bitset<1024>& bit_mask, int batch_size,
+                        bool (*func)(T)) override {
     int num_values = std::min(num_values_, batch_size);
     int decoded_values = idx_decoder_.GetFilteredBitmapWithDict(
+        reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
+        num_values, func);
+    if (decoded_values != num_values) {
+      ParquetException::EofException();
+    }
+    num_values_ -= num_values;
+    return num_values;
+  }
+
+  int GetFilteredBitmapEWAH(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
+                        bool (*func)(T)) override {
+    int num_values = std::min(num_values_, batch_size);
+    int decoded_values = idx_decoder_.GetFilteredBitmapWithDictEWAH(
         reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
         num_values, func);
     if (decoded_values != num_values) {
