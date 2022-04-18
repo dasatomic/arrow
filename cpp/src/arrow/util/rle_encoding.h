@@ -653,6 +653,7 @@ inline int RleDecoder::GetBatchWithDictSpaced(const T* dictionary,
   return total_processed;
 }
 
+//Does not work after changing ReadBatch to keep reading data pages until batch_size is reached, or the row group is finished
 template <typename T>
 inline int RleDecoder::GetFilteredBitmapWithDict(const T* dictionary,
                                                  int32_t dictionary_length,
@@ -722,6 +723,7 @@ inline int RleDecoder::GetFilteredBitmapWithDictEWAH(const T* dictionary,
                                                  int batch_size, bool (*func)(T)) {
   DCHECK_GE(bit_width_, 0);
   int values_read = 0;
+  int values_read_in_prev_page = bit_mask.sizeInBits();
   using IndexType = int32_t;
 
   while (values_read < batch_size) {
@@ -754,7 +756,7 @@ inline int RleDecoder::GetFilteredBitmapWithDictEWAH(const T* dictionary,
 
       for (int i = 0; i < literal_batch; i++) {
         T val = dictionary[indices[i]];
-        if (func(val)) bit_mask.set(i + values_read);
+        if (func(val)) bit_mask.set(values_read_in_prev_page + i + values_read);
       }
 
       literal_count_ -= literal_batch;
@@ -766,6 +768,7 @@ inline int RleDecoder::GetFilteredBitmapWithDictEWAH(const T* dictionary,
 
   return values_read;
 }
+
 
 template <typename T>
 bool RleDecoder::NextCounts() {

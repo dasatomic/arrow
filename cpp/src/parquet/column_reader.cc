@@ -1029,61 +1029,55 @@ int64_t TypedColumnReaderImpl<DType>::ReadFilteredBitmapEWAH(int16_t* def_levels
                                                          int16_t* rep_levels, ewah::EWAHBoolArray<uint32_t>& bit_mask,
                                                          int batch_size, bool (*func)(T),
                                                          int64_t* values_read) {
+  *values_read = 0;
   // HasNext invokes ReadNewPage
-  if (!HasNext()) {
-    *values_read = 0;
-    return 0;
-  }
+  while (HasNext() && *values_read < batch_size) {
+    int64_t num_def_levels = 0;
+    int64_t values_to_read = 0;
+    ReadLevels(batch_size - *values_read, def_levels, rep_levels, &num_def_levels, &values_to_read);
 
-  int64_t num_def_levels = 0;
-  int64_t values_to_read = 0;
-  ReadLevels(batch_size, def_levels, rep_levels, &num_def_levels, &values_to_read);
-
-  *values_read = current_decoder_->GetFilteredBitmapEWAH(
+    int64_t values_read_on_page = current_decoder_->GetFilteredBitmapEWAH(
       bit_mask, static_cast<int>(values_to_read), func);
-
-  int64_t total_values = std::max(num_def_levels, *values_read);
-  int64_t expected_values =
-      std::min(static_cast<int64_t>(batch_size),
-               this->num_buffered_values_ - this->num_decoded_values_);
-  if (total_values == 0 && expected_values > 0) {
-    std::stringstream ss;
-    ss << "Read 0 values, expected " << expected_values;
-    ParquetException::EofException(ss.str());
+    int64_t total_values = std::max(num_def_levels, values_read_on_page);
+    int64_t expected_values =
+      std::min(batch_size - *values_read, this->num_buffered_values_ - this->num_decoded_values_);
+    if (total_values == 0 && expected_values > 0) {
+      std::stringstream ss;
+      ss << "Read 0 values, expected " << expected_values;
+      ParquetException::EofException(ss.str());
+    }
+    this->ConsumeBufferedValues(total_values);
+    *values_read += total_values;
   }
-  this->ConsumeBufferedValues(total_values);
 
-  return total_values;
+  return *values_read;
 }
 
 template <typename DType>
 int64_t TypedColumnReaderImpl<DType>::ReadBatch(int64_t batch_size, int16_t* def_levels,
                                                 int16_t* rep_levels, T* values,
                                                 int64_t* values_read) {
+  *values_read = 0;
   // HasNext invokes ReadNewPage
-  if (!HasNext()) {
-    *values_read = 0;
-    return 0;
+  while (HasNext() && *values_read < batch_size) {
+    int64_t num_def_levels = 0;
+    int64_t values_to_read = 0;
+    ReadLevels(batch_size - *values_read, def_levels, rep_levels, &num_def_levels, &values_to_read);
+
+    int64_t values_read_on_page = this->ReadValues(values_to_read, values + *values_read);
+    int64_t total_values = std::max(num_def_levels, values_read_on_page);
+    int64_t expected_values =
+      std::min(batch_size - *values_read, this->num_buffered_values_ - this->num_decoded_values_);
+    if (total_values == 0 && expected_values > 0) {
+      std::stringstream ss;
+      ss << "Read 0 values, expected " << expected_values;
+      ParquetException::EofException(ss.str());
+    }
+    this->ConsumeBufferedValues(total_values);
+    *values_read += total_values;
   }
 
-  // TODO(wesm): keep reading data pages until batch_size is reached, or the
-  // row group is finished
-  int64_t num_def_levels = 0;
-  int64_t values_to_read = 0;
-  ReadLevels(batch_size, def_levels, rep_levels, &num_def_levels, &values_to_read);
-
-  *values_read = this->ReadValues(values_to_read, values);
-  int64_t total_values = std::max(num_def_levels, *values_read);
-  int64_t expected_values =
-      std::min(batch_size, this->num_buffered_values_ - this->num_decoded_values_);
-  if (total_values == 0 && expected_values > 0) {
-    std::stringstream ss;
-    ss << "Read 0 values, expected " << expected_values;
-    ParquetException::EofException(ss.str());
-  }
-  this->ConsumeBufferedValues(total_values);
-
-  return total_values;
+  return *values_read;
 }
 
 template <typename DType>
