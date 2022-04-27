@@ -144,13 +144,18 @@ class RleDecoder {
   // value satisfies condition represent by given function 
   template <typename T>
   int GetFilteredBitmapWithDict(const T* dictionary, int32_t dictionary_length,
-                                std::bitset<1024>& bit_mask, int batch_size,
+                                ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
                                 bool (*func)(T));
 
   template <typename T>
-  int GetFilteredBitmapWithDictEWAH(const T* dictionary, int32_t dictionary_length,
+  int GetFilteredCompressedBitmapWithDict(const T* dictionary, int32_t dictionary_length,
                                 ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
                                 bool (*func)(T));
+  template <typename T>
+  int GetFilteredAndedCompressedBitmapWithDict(const T* dictionary,
+                                                int32_t dictionary_length,
+                                         ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                         int batch_size, int offset, bool (*func)(T));
 
  protected:
   bit_util::BitReader bit_reader_;
@@ -653,14 +658,14 @@ inline int RleDecoder::GetBatchWithDictSpaced(const T* dictionary,
   return total_processed;
 }
 
-//Does not work after changing ReadBatch to keep reading data pages until batch_size is reached, or the row group is finished
 template <typename T>
 inline int RleDecoder::GetFilteredBitmapWithDict(const T* dictionary,
                                                  int32_t dictionary_length,
-                                                 std::bitset<1024>& bit_mask,
+                                                 ewah::BoolArray<uint32_t>& bit_mask,
                                                  int batch_size, bool (*func) (T)) {
   DCHECK_GE(bit_width_, 0);
   int values_read = 0;
+  int offset = bit_mask.sizeInBits();
   using IndexType = int32_t;
 
   while (values_read < batch_size) {
@@ -675,14 +680,12 @@ inline int RleDecoder::GetFilteredBitmapWithDict(const T* dictionary,
 
       int repeat_batch = std::min(remaining, repeat_count_);
 
-      bit_mask <<= repeat_batch;
-
       if (func(val)) {
-        std::bitset<1024> tmp_bit_map;
-        tmp_bit_map.set();
-        tmp_bit_map >>= 1024 - repeat_batch;
-        bit_mask |= tmp_bit_map;
-      }
+        for (int i = 0; i < repeat_batch; i++) 
+          bit_mask.set(values_read + offset + i);
+      } 
+
+      bit_mask.padWithZeroes(values_read + offset + repeat_batch);
 
       repeat_count_ -= repeat_batch;
       values_read += repeat_batch;
@@ -697,13 +700,13 @@ inline int RleDecoder::GetFilteredBitmapWithDict(const T* dictionary,
       if (ARROW_PREDICT_FALSE(actual_read != literal_batch)) {
         return values_read;
       }
-
-      bit_mask <<= literal_batch;
+      ewah::BoolArray<uint32_t> tmp_bit_map;
       for (int i = 0; i < literal_batch; i++) {
         T val = dictionary[indices[i]];
-        if (func(val))
-            bit_mask.set(i);
+        if (func(val)) 
+           bit_mask.set(values_read + offset + i);
       }
+      bit_mask.padWithZeroes(values_read + offset + literal_batch);
 
       literal_count_ -= literal_batch;
       values_read += literal_batch;
@@ -717,7 +720,8 @@ inline int RleDecoder::GetFilteredBitmapWithDict(const T* dictionary,
 
 
 template <typename T>
-inline int RleDecoder::GetFilteredBitmapWithDictEWAH(const T* dictionary,
+inline int RleDecoder::GetFilteredCompressedBitmapWithDict(
+    const T* dictionary,
                                                  int32_t dictionary_length,
                                                  ewah::EWAHBoolArray<uint32_t>& bit_mask,
                                                  int batch_size, bool (*func)(T)) {
@@ -765,10 +769,87 @@ inline int RleDecoder::GetFilteredBitmapWithDictEWAH(const T* dictionary,
       if (!NextCounts<IndexType>()) return values_read;
     }
   }
-
+  bit_mask.padWithZeroes(values_read + values_read_in_prev_page);
   return values_read;
 }
 
+template <typename T>
+inline int RleDecoder::GetFilteredAndedCompressedBitmapWithDict(
+    const T* dictionary, int32_t dictionary_length,
+    ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset, bool (*func)(T)) {
+  DCHECK_GE(bit_width_, 0);
+  int values_read = 0;
+  ewah::EWAHBoolArray<uint32_t> filtered_bitmap;
+  if(offset > 0)
+    filtered_bitmap.fastaddStreamOfBits(true, offset);
+  using IndexType = int32_t;
+
+  while (values_read < batch_size) {
+    int remaining = batch_size - values_read;
+
+    if (repeat_count_ > 0) {
+      auto idx = static_cast<IndexType>(current_value_);
+      if (ARROW_PREDICT_FALSE(!IndexInRange(idx, dictionary_length))) {
+        return values_read;
+      }
+      T val = dictionary[idx];
+
+      int repeat_batch = std::min(remaining, repeat_count_);
+
+      if (bit_mask.numberOfUpcomingOnes() > 0) {
+        repeat_batch = std::min(repeat_batch, static_cast<int>(bit_mask.numberOfUpcomingOnes()));
+        filtered_bitmap.fastaddStreamOfBits(func(val), repeat_batch);
+      } else {
+        repeat_batch = std::min(repeat_batch, static_cast<int>(bit_mask.numberOfUpcomingZeros()));
+        filtered_bitmap.fastaddStreamOfBits(false, repeat_batch);
+      }
+
+      bit_mask.skipBits(repeat_batch);
+
+      repeat_count_ -= repeat_batch;
+      values_read += repeat_batch;
+    } else if (literal_count_ > 0) {
+      constexpr int kBufferSize = 1024;
+      IndexType indices[kBufferSize];
+
+      int literal_batch = std::min(remaining, literal_count_);
+      literal_batch = std::min(literal_batch, kBufferSize);
+
+      while (literal_batch > 0) {
+        if (bit_mask.numberOfUpcomingZeros() > 0) {
+          int bits_to_skip = std::min(static_cast<int>(bit_mask.numberOfUpcomingZeros()), literal_batch);
+          bit_reader_.Advance(bits_to_skip * bit_width_);
+          filtered_bitmap.fastaddStreamOfBits(false, bits_to_skip);
+          bit_mask.skipBits(bits_to_skip);
+          literal_count_ -= bits_to_skip;
+          values_read += bits_to_skip;
+          literal_batch -= bits_to_skip;
+        } else {
+          int32_t bits_to_check = std::min(static_cast<int>(bit_mask.numberOfUpcomingOnes()), literal_batch);
+          int actual_read = bit_reader_.GetBatch(bit_width_, indices, bits_to_check);
+          if (ARROW_PREDICT_FALSE(actual_read != bits_to_check)) {
+            return values_read;
+          }
+          for (int i = 0; i < bits_to_check; i++) {
+            T val = dictionary[indices[i]];
+            filtered_bitmap.fastaddStreamOfBits(func(val), 1);
+          }
+          bit_mask.skipBits(bits_to_check);
+          literal_count_ -= bits_to_check;
+          values_read += bits_to_check;
+          literal_batch -= bits_to_check;
+        }
+      }
+    } else {
+      if (!NextCounts<IndexType>()) return values_read;
+    }
+  }
+
+  filtered_bitmap.padWithOnes(bit_mask.sizeInBits());
+
+  bit_mask = bit_mask.logicaland(filtered_bitmap);
+  return values_read;
+}
 
 template <typename T>
 bool RleDecoder::NextCounts() {

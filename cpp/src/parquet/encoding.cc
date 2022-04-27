@@ -1593,7 +1593,7 @@ class DictDecoderImpl : public DecoderImpl, virtual public DictDecoder<Type> {
     *dictionary = reinterpret_cast<T*>(dictionary_->mutable_data());
   }
 
-  int GetFilteredBitmap(std::bitset<1024>& bit_mask, int batch_size,
+  int GetFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
                         bool (*func)(T)) override {
     int num_values = std::min(num_values_, batch_size);
     int decoded_values = idx_decoder_.GetFilteredBitmapWithDict(
@@ -1606,12 +1606,25 @@ class DictDecoderImpl : public DecoderImpl, virtual public DictDecoder<Type> {
     return num_values;
   }
 
-  int GetFilteredBitmapEWAH(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
+  int GetFilteredCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
                         bool (*func)(T)) override {
     int num_values = std::min(num_values_, batch_size);
-    int decoded_values = idx_decoder_.GetFilteredBitmapWithDictEWAH(
+    int decoded_values = idx_decoder_.GetFilteredCompressedBitmapWithDict(
         reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
         num_values, func);
+    if (decoded_values != num_values) {
+      ParquetException::EofException();
+    }
+    num_values_ -= num_values;
+    return num_values;
+  }
+
+  int GetFilteredAndedCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                       int batch_size, int offset, bool (*func)(T)) override {
+    int num_values = std::min(num_values_, batch_size);
+    int decoded_values = idx_decoder_.GetFilteredAndedCompressedBitmapWithDict(
+        reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
+        num_values, offset, func);
     if (decoded_values != num_values) {
       ParquetException::EofException();
     }

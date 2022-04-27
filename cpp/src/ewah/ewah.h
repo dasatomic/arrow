@@ -444,6 +444,7 @@ public:
    * intersections.
    *
    */
+  void removeLastWord();
   size_t padWithZeroes(const size_t totalbits);
   size_t padWithOnes(const size_t totalbits);
 
@@ -612,6 +613,11 @@ public:
     buffer = x.buffer;
     sizeinbits = x.sizeinbits;
     lastRLW = x.lastRLW;
+    cur = x.cur;
+    curbitinwords = x.curbitinwords;
+    numberofupcomingliteralwords = x.numberofupcomingliteralwords;
+    numberofupcomingones = x.numberofupcomingones;
+    numberofupcomingzeros = x.numberofupcomingzeros;
     return *this;
   }
 
@@ -629,6 +635,11 @@ public:
     buffer = std::move(x.buffer);
     sizeinbits = x.sizeinbits;
     lastRLW = x.lastRLW;
+    cur = x.cur;
+    curbitinwords = x.curbitinwords;
+    numberofupcomingliteralwords = x.numberofupcomingliteralwords;
+    numberofupcomingones = x.numberofupcomingones;
+    numberofupcomingzeros = x.numberofupcomingzeros;
     return *this;
   }
 
@@ -694,7 +705,13 @@ public:
    */
   inline void fastaddStreamOfDirtyWords(const uword *v, const size_t number);
 
-private:
+  size_t numberOfUpcomingOnes();
+
+  size_t numberOfUpcomingZeros();
+
+  void skipBits(size_t number);
+
+ private:
   void assertWordCount(std::string message) const;
   void correctWordCount();
   size_t numberOfWords() const;
@@ -713,6 +730,12 @@ private:
   std::vector<uword> buffer;
   size_t sizeinbits;
   size_t lastRLW;
+
+  size_t cur = 0;
+  size_t curbitinwords = 0;
+  size_t numberofupcomingliteralwords = 0;
+  size_t numberofupcomingones = 0;
+  size_t numberofupcomingzeros = 0;
 };
 } // namespace ewah
 #include "ewah-inl.h"

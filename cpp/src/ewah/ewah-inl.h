@@ -628,6 +628,27 @@ size_t EWAHBoolArray<uword>::addLiteralWord(const uword newdata) {
 }
 
 template <class uword>
+void EWAHBoolArray<uword>::removeLastWord() {
+  RunningLengthWord<uword> rlw(buffer[lastRLW]);
+  if (rlw.getNumberOfLiteralWords() > 0) {
+    buffer.pop_back();
+    rlw.setNumberOfLiteralWords(rlw.getNumberOfLiteralWords() - 1);
+  } else if (rlw.getRunningLength() == 1 && lastRLW != 0) {
+    buffer.pop_back();
+    lastRLW = 0;
+    while (lastRLW < buffer.size()) {
+      RunningLengthWord<uword> rlw(buffer[lastRLW]);
+      if (rlw.getNumberOfLiteralWords() + lastRLW + 1 == buffer.size()) break;
+      lastRLW += rlw.getNumberOfLiteralWords() + 1;
+    }
+  } else {
+    if (rlw.getRunningLength() == 1) rlw.setRunningBit(false);
+    rlw.setRunningLength(rlw.getRunningLength() - 1);
+  }
+  sizeinbits -= sizeinbits % wordinbits;
+}
+
+template <class uword>
 size_t EWAHBoolArray<uword>::padWithZeroes(const size_t totalbits) {
   size_t wordsadded = 0;
   if (totalbits <= sizeinbits)
@@ -635,21 +656,15 @@ size_t EWAHBoolArray<uword>::padWithZeroes(const size_t totalbits) {
 
   size_t missingbits = totalbits - sizeinbits;
 
-  RunningLengthWord<uword> rlw(buffer[lastRLW]);
-  if (rlw.getNumberOfLiteralWords() > 0) {
-    // Consume trailing zeroes of trailing literal word (past sizeinbits)
-    size_t remain = sizeinbits % wordinbits;
-    if (remain > 0) // Is last word partial?
-    {
-      size_t avail = wordinbits - remain;
-      if (avail > 0) {
-        if (missingbits > avail) {
-          missingbits -= avail;
-        } else {
-          missingbits = 0;
-        }
-        sizeinbits += avail;
-      }
+  size_t remain = sizeinbits % wordinbits;
+  if (remain > 0) { // Is last word partial?
+    size_t avail = wordinbits - remain;
+    if (missingbits > avail) {
+      missingbits -= avail;
+      sizeinbits += avail;
+    } else {
+      sizeinbits += missingbits;
+      missingbits = 0;
     }
   }
 
@@ -678,35 +693,31 @@ size_t EWAHBoolArray<uword>::padWithOnes(const size_t totalbits) {
     size_t avail = wordinbits - remain;
     if (rlw.getNumberOfLiteralWords() > 0) { //If last word is literal change it
       if (missingbits > avail) {
-        buffer[bufferSize() - 1] |= ((1 << avail) - 1) << (wordinbits - avail);
-        if(buffer[bufferSize() - 1] == static_cast<uword>(-1)){
-          buffer.pop_back();
-          rlw.setNumberOfLiteralWords(rlw.getNumberOfLiteralWords() - 1);
+        buffer[bufferSize() - 1] |=
+            ((static_cast<uword>(1) << avail) - static_cast<uword>(1)) << remain;
+        if (buffer[bufferSize() - 1] == static_cast<uword>(~0)) { //If word contains only
+          removeLastWord();
           addEmptyWord(true);
+          sizeinbits += remain;
         }
         sizeinbits += avail;
         missingbits -= avail;
       } else {
-        buffer[bufferSize() - 1] |= ((1 << missingbits) - 1) << (wordinbits - avail);
+        buffer[bufferSize() - 1] |=
+            ((static_cast<uword>(1) << missingbits) - static_cast<uword>(1))
+                                    << remain;
         sizeinbits += missingbits;
         missingbits = 0;
       }
-    } else {
-      bool lastTrue = (buffer[lastRLW] & 1 > 0);
-      rlw.setRunningLength(static_cast<uword>(rlw.getRunningLength() - 1));
+    } else { //If last word is partial it can be literal or containing all zeros
+      removeLastWord();
       if (missingbits > avail) {
-        if (lastTrue)
-          addEmptyWord(true);
-        else 
-          addLiteralWord(((static_cast<uword>(1) << avail) - 1) << (wordinbits - avail));
-        sizeinbits += avail;
+        addLiteralWord(((static_cast<uword>(1) << avail) - static_cast<uword>(1)) << remain);
+        sizeinbits += avail + remain;
         missingbits -= avail;
       } else {
-        if (lastTrue)
-          addLiteralWord((static_cast<uword>(1) << (wordinbits - avail + missingbits)) - 1);
-        else
-          addLiteralWord(((static_cast<uword>(1) << missingbits) - 1) << (wordinbits - avail));
-        sizeinbits += missingbits;
+        addLiteralWord(((static_cast<uword>(1) << missingbits) - static_cast<uword>(1)) << remain);  
+        sizeinbits += missingbits + remain;
         missingbits = 0;
       }
     }
@@ -717,7 +728,8 @@ size_t EWAHBoolArray<uword>::padWithOnes(const size_t totalbits) {
     wordsadded = addStreamOfEmptyWords(true, wordstoadd);
     sizeinbits += wordsadded * wordinbits;
     if ((missingbits % wordinbits) != 0){ // If not all bits are added add literal word at the end
-      addLiteralWord(( 1 << (missingbits % wordinbits)) - 1);
+      addLiteralWord((static_cast<uword>(1) << (missingbits % wordinbits)) -
+                     static_cast<uword>(1));
       ++wordstoadd;
     }
       
@@ -1728,6 +1740,93 @@ template <class uword>
 size_t EWAHBoolArray<uword>::sizeOnDisk(const bool savesizeinbits) const {
   return (savesizeinbits ? sizeof(uint64_t) : 0) + sizeof(uint64_t) +
          sizeof(uword) * buffer.size();
+}
+
+template <class uword>
+size_t EWAHBoolArray<uword>::numberOfUpcomingOnes() {
+  if (numberofupcomingones > 0 || numberofupcomingzeros > 0) return numberofupcomingones;
+  size_t curWord = cur;
+  size_t curbit = curbitinwords;
+  size_t curNumberOfLiteral = numberofupcomingliteralwords;
+  while (true) {
+    if (curNumberOfLiteral > 0) {
+      while (curbit < wordinbits &&
+             (buffer[curWord] & static_cast<uword>(static_cast<uword>(1) << curbit))) {
+        curbit++;
+        numberofupcomingones++;
+      }
+      if (curbit != wordinbits) break;
+      curNumberOfLiteral--;
+    } else {
+      if (buffer.size() == curWord) break;
+      ConstRunningLengthWord<uword> rlw(buffer[curWord]);
+      if (rlw.getRunningLength() > 0 && rlw.getRunningBit() == 0) break;
+      numberofupcomingones += rlw.getRunningLength() * wordinbits - curbit;
+      curNumberOfLiteral = rlw.getNumberOfLiteralWords();
+    }
+    curWord++;
+    curbit = 0;
+  }
+  return numberofupcomingones;
+}
+
+template <class uword>
+size_t EWAHBoolArray<uword>::numberOfUpcomingZeros() {
+  if (numberofupcomingones > 0 || numberofupcomingzeros > 0) return numberofupcomingzeros;
+  size_t curWord = cur;
+  size_t curbit = curbitinwords;
+  size_t curNumberOfLiteral = numberofupcomingliteralwords;
+  while (true) {
+    if (curNumberOfLiteral > 0) {
+      while (curbit < wordinbits &&
+             ((buffer[curWord] & static_cast<uword>(static_cast<uword>(1) << curbit)) ==
+              0)) {
+        curbit++;
+        numberofupcomingzeros++;
+      }
+      if (curbit != wordinbits) break;
+      curNumberOfLiteral--;
+    } else {
+      if (buffer.size() == curWord) break;
+      ConstRunningLengthWord<uword> rlw(buffer[curWord]);
+      if (rlw.getRunningBit() == 1) break;
+      numberofupcomingzeros += rlw.getRunningLength() * wordinbits - curbit;
+      curNumberOfLiteral = rlw.getNumberOfLiteralWords();
+    }
+    curWord++;
+    curbit = 0;
+  }
+  return numberofupcomingzeros;
+}
+
+template <class uword>
+void EWAHBoolArray<uword>::skipBits(size_t number) {
+  size_t numberBitsSkipped = 0;
+  while (numberBitsSkipped < number) {
+    size_t remainingToSkip = number - numberBitsSkipped;
+    if (numberofupcomingliteralwords > 0) {
+      if (wordinbits - curbitinwords > remainingToSkip) {
+        curbitinwords += remainingToSkip;
+        numberBitsSkipped += remainingToSkip;
+        break;
+      }
+      numberBitsSkipped += wordinbits - curbitinwords;
+      numberofupcomingliteralwords--;
+    } else {
+      ConstRunningLengthWord<uword> rlw(buffer[cur]);
+      if (rlw.getRunningLength() * wordinbits - curbitinwords > remainingToSkip) {
+        curbitinwords += remainingToSkip;
+        numberBitsSkipped += remainingToSkip;
+        break;
+      }
+      numberBitsSkipped += rlw.getRunningLength() * wordinbits - curbitinwords;
+      numberofupcomingliteralwords = rlw.getNumberOfLiteralWords();
+    }
+    cur++;
+    curbitinwords = 0;
+  }
+  numberofupcomingzeros = 0;
+  numberofupcomingones = 0;
 }
 } // namespace ewah
 #endif

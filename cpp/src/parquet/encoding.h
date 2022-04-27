@@ -308,13 +308,18 @@ class TypedDecoder : virtual public Decoder {
 
   // Decoder that returns bit map where ones represent that 
   // value satisfies condition given by the function 
-  virtual int GetFilteredBitmap(std::bitset<1024>& bit_mask, int batch_size,
-                                   bool (*func)(T)) {
+  virtual int GetFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, 
+                                   int batch_size, bool (*func)(T)) {
     return 0;
   }
 
-  virtual int GetFilteredBitmapEWAH(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
-                                bool (*func)(T)) {
+  virtual int GetFilteredCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                          int batch_size, bool (*func)(T)) {
+    return 0;
+  }
+
+  virtual int GetFilteredAndedCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                    int batch_size, int offset, bool (*func)(T)) {
     return 0;
   }
 
