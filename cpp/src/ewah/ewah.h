@@ -711,6 +711,8 @@ public:
 
   void skipBits(size_t number);
 
+  void resetIterator();
+
  private:
   void assertWordCount(std::string message) const;
   void correctWordCount();

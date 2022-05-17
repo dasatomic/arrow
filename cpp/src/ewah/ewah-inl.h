@@ -1828,5 +1828,14 @@ void EWAHBoolArray<uword>::skipBits(size_t number) {
   numberofupcomingzeros = 0;
   numberofupcomingones = 0;
 }
+
+template <class uword>
+void EWAHBoolArray<uword>::resetIterator() {
+  cur = 0;
+  curbitinwords = 0;
+  numberofupcomingliteralwords = 0;
+  numberofupcomingones = 0;
+  numberofupcomingzeros = 0;
+}
 } // namespace ewah
 #endif

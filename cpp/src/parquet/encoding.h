@@ -308,18 +308,30 @@ class TypedDecoder : virtual public Decoder {
 
   // Decoder that returns bit map where ones represent that 
   // value satisfies condition given by the function 
-  virtual int GetFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, 
-                                   int batch_size, bool (*func)(T)) {
+  virtual int DecodeToFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
+                                     bool (*func)(T),
+                                     void (*func1)(T*, int, ewah::BoolArray<uint32_t>&)) {
+    throw ParquetException("Filter pushdown not implemented for this type of encoding");
     return 0;
   }
 
-  virtual int GetFilteredCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask,
-                                          int batch_size, bool (*func)(T)) {
+  virtual int DecodeToFilteredCompressedBitmap(
+      ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+      void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+    throw ParquetException("Filter pushdown not implemented for this type of encoding");
     return 0;
   }
 
-  virtual int GetFilteredAndedCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask,
-                                    int batch_size, int offset, bool (*func)(T)) {
+  virtual int DecodeToFilteredAndedCompressedBitmap(
+      ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset,
+      bool (*func)(T), void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+    throw ParquetException("Filter pushdown not implemented for this type of encoding");
+    return 0;
+  }
+
+  virtual int DecodeBatchBasedOnCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                                 T* values, int batch_size) {
+    throw ParquetException("Filter pushdown not implemented for this type of encoding");
     return 0;
   }
 
