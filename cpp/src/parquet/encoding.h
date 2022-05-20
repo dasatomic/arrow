@@ -310,21 +310,21 @@ class TypedDecoder : virtual public Decoder {
   // value satisfies condition given by the function 
   virtual int DecodeToFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
                                      bool (*func)(T),
-                                     void (*func1)(T*, int, ewah::BoolArray<uint32_t>&)) {
+                                     void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) {
     throw ParquetException("Filter pushdown not implemented for this type of encoding");
     return 0;
   }
 
   virtual int DecodeToFilteredCompressedBitmap(
       ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
-      void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+      void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
     throw ParquetException("Filter pushdown not implemented for this type of encoding");
     return 0;
   }
 
   virtual int DecodeToFilteredAndedCompressedBitmap(
       ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset,
-      bool (*func)(T), void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+      bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
     throw ParquetException("Filter pushdown not implemented for this type of encoding");
     return 0;
   }

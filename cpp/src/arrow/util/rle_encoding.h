@@ -146,17 +146,20 @@ class RleDecoder {
   int GetFilteredBitmapWithDict(const T* dictionary, int32_t dictionary_length,
                                 ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
                                 bool (*func)(T),
-                                void (*func1)(T*, int, ewah::BoolArray<uint32_t>&));
+                                void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&));
 
   template <typename T>
-  int GetFilteredCompressedBitmapWithDict(const T* dictionary, int32_t dictionary_length,
-                                ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
-                                void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&));
+  int GetFilteredCompressedBitmapWithDict(
+      const T* dictionary, int32_t dictionary_length,
+      ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+      void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&));
+
   template <typename T>
-  int GetFilteredAndedCompressedBitmapWithDict(const T* dictionary,
-                                                int32_t dictionary_length,
-                                                ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset,
-                                                bool (*func)(T), void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&));
+  int GetFilteredAndedCompressedBitmapWithDict(
+      const T* dictionary, int32_t dictionary_length,
+      ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset,
+      bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&));
+
   template <typename T>
   int GetBatchBasedOnCompressedBitmapWithDict(const T* dictionary,
                                               int32_t dictionary_length,
@@ -667,7 +670,8 @@ inline int RleDecoder::GetBatchWithDictSpaced(const T* dictionary,
 template <typename T>
 inline int RleDecoder::GetFilteredBitmapWithDict(
     const T* dictionary, int32_t dictionary_length, ewah::BoolArray<uint32_t>& bit_mask,
-    int batch_size, bool (*func)(T), void (*func1)(T*, int, ewah::BoolArray<uint32_t>&)) {
+    int batch_size, bool (*func)(T),
+    void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) {
   DCHECK_GE(bit_width_, 0);
   int values_read = 0;
   int values_read_in_prev_page = static_cast<int>(bit_mask.sizeInBits());
@@ -714,7 +718,7 @@ inline int RleDecoder::GetFilteredBitmapWithDict(
       bit_mask.padWithZeroes(values_read_in_prev_page + values_read);
 
       converter.Copy(out, indices, literal_batch);
-      func1(out, literal_batch, bit_mask);
+      batchFunc(out, literal_batch, bit_mask);
 
       literal_count_ -= literal_batch;
       values_read += literal_batch;
@@ -732,7 +736,7 @@ template <typename T>
 inline int RleDecoder::GetFilteredCompressedBitmapWithDict(
                                                  const T* dictionary, int32_t dictionary_length,
                                                  ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
-                                                 void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+                                                 void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
   DCHECK_GE(bit_width_, 0);
   int values_read = 0;
   int values_read_in_prev_page = static_cast<int>(bit_mask.sizeInBits());
@@ -775,7 +779,7 @@ inline int RleDecoder::GetFilteredCompressedBitmapWithDict(
       bit_mask.padWithZeroes(values_read_in_prev_page + values_read);
       
       converter.Copy(out, indices, literal_batch);
-      func1(out, literal_batch, bit_mask);
+      batchFunc(out, literal_batch, bit_mask);
       /*
       for (int i = 0; i < literal_batch; i++) {
         T val = dictionary[indices[i]];
@@ -796,7 +800,7 @@ template <typename T>
 inline int RleDecoder::GetFilteredAndedCompressedBitmapWithDict(
     const T* dictionary, int32_t dictionary_length,
     ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset, bool (*func)(T),
-    void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+    void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
   DCHECK_GE(bit_width_, 0);
   int values_read = 0;
   ewah::EWAHBoolArray<uint32_t> filtered_bitmap;
@@ -859,7 +863,7 @@ inline int RleDecoder::GetFilteredAndedCompressedBitmapWithDict(
 
           filtered_bitmap.padWithZeroes(offset + values_read);
           converter.Copy(out, indices, bits_to_check);
-          func1(out, bits_to_check, filtered_bitmap);
+          batchFunc(out, bits_to_check, filtered_bitmap);
 
           bit_mask.skipBits(bits_to_check);
           literal_count_ -= bits_to_check;

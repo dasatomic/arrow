@@ -983,15 +983,14 @@ class PlainDecoder : public DecoderImpl, virtual public TypedDecoder<DType> {
 
   int DecodeToFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
                              bool (*func)(T),
-                             void (*func1)(T*, int, ewah::BoolArray<uint32_t>&)) override;
+                             void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) override;
 
   int DecodeToFilteredCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
-                             bool (*func)(T),
-                             void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override;
+                             bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override;
 
   int DecodeToFilteredAndedCompressedBitmap(
       ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset,
-      bool (*func)(T), void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override;
+      bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override;
 
   int DecodeBatchBasedOnCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, T* values,
                                       int batch_size) override;
@@ -1076,7 +1075,7 @@ int PlainDecoder<DType>::DecodeArrow(
 template <typename DType>
 int PlainDecoder<DType>::DecodeToFilteredBitmap(
     ewah::BoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
-    void (*func1)(T*, int, ewah::BoolArray<uint32_t>&)){
+    void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) {
   constexpr int kBufferSize = 10240;
   T out[kBufferSize];
   int values_read_in_prev_page = static_cast<int>(bit_mask.sizeInBits());
@@ -1087,7 +1086,7 @@ int PlainDecoder<DType>::DecodeToFilteredBitmap(
     int num_values = this->Decode(out, values_to_read);
     bit_mask.padWithZeroes(values_read_in_prev_page + decoded_values);
 
-    func1(out, num_values, bit_mask);
+    batchFunc(out, num_values, bit_mask);
 
   }
    
@@ -1099,7 +1098,7 @@ int PlainDecoder<DType>::DecodeToFilteredBitmap(
 template <typename DType>
 int PlainDecoder<DType>::DecodeToFilteredCompressedBitmap(
     ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
-    void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+    void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
   constexpr int kBufferSize = 10240;
   T out[kBufferSize];
   int values_read_in_prev_page = static_cast<int>(bit_mask.sizeInBits());
@@ -1110,7 +1109,7 @@ int PlainDecoder<DType>::DecodeToFilteredCompressedBitmap(
     int num_values = this->Decode(out, values_to_read);
     bit_mask.padWithZeroes(values_read_in_prev_page + decoded_values);
 
-    func1(out, num_values, bit_mask);
+    batchFunc(out, num_values, bit_mask);
   }
 
   bit_mask.padWithZeroes(decoded_values + values_read_in_prev_page);
@@ -1121,7 +1120,7 @@ int PlainDecoder<DType>::DecodeToFilteredCompressedBitmap(
 template <typename DType>
 int PlainDecoder<DType>::DecodeToFilteredAndedCompressedBitmap(
     ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset, bool (*func)(T),
-    void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+    void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
   ewah::EWAHBoolArray<uint32_t> filtered_bitmap;
   if (offset > 0) filtered_bitmap.fastaddStreamOfBits(true, offset);
 
@@ -1140,7 +1139,7 @@ int PlainDecoder<DType>::DecodeToFilteredAndedCompressedBitmap(
       num_values = this->Decode(out, values_to_read);
       filtered_bitmap.padWithZeroes(offset + decoded_values);
 
-      func1(out, num_values, bit_mask);
+      batchFunc(out, num_values, bit_mask);
     } else {
       values_to_read =
        std::min(values_to_read, static_cast<int> (bit_mask.numberOfUpcomingZeros()));
@@ -1723,11 +1722,11 @@ class DictDecoderImpl : public DecoderImpl, virtual public DictDecoder<Type> {
 
   int DecodeToFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
                              bool (*func)(T),
-                             void (*func1)(T*, int, ewah::BoolArray<uint32_t>&)) override {
+                             void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) override {
     int num_values = std::min(num_values_, batch_size);
     int decoded_values = idx_decoder_.GetFilteredBitmapWithDict(
         reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
-        num_values, func, func1);
+        num_values, func, batchFunc);
     if (decoded_values != num_values) {
       ParquetException::EofException();
     }
@@ -1736,11 +1735,11 @@ class DictDecoderImpl : public DecoderImpl, virtual public DictDecoder<Type> {
   }
 
   int DecodeToFilteredCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
-      void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override {
+      void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override {
     int num_values = std::min(num_values_, batch_size);
     int decoded_values = idx_decoder_.GetFilteredCompressedBitmapWithDict(
         reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
-        num_values, func, func1);
+        num_values, func, batchFunc);
     if (decoded_values != num_values) {
       ParquetException::EofException();
     }
@@ -1749,11 +1748,11 @@ class DictDecoderImpl : public DecoderImpl, virtual public DictDecoder<Type> {
   }
 
   int DecodeToFilteredAndedCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset,
-      bool (*func)(T), void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override {
+      bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override {
     int num_values = std::min(num_values_, batch_size);
     int decoded_values = idx_decoder_.GetFilteredAndedCompressedBitmapWithDict(
         reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
-        num_values, offset, func, func1);
+        num_values, offset, func, batchFunc);
     if (decoded_values != num_values) {
       ParquetException::EofException();
     }
