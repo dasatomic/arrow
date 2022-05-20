@@ -51,6 +51,7 @@
 #include "parquet/statistics.h"
 #include "parquet/thrift_internal.h"  // IWYU pragma: keep
 #include "parquet/windows_fixup.h"    // for OPTIONAL
+#include "../ewah/ewah.h"
 
 using arrow::MemoryPool;
 using arrow::internal::AddWithOverflow;
@@ -546,6 +547,39 @@ class ColumnReaderImplBase {
     return num_decoded;
   }
 
+  int64_t GetFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
+                            bool (*func)(T),
+                            void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) {
+    int64_t num_decoded =
+        current_decoder_->DecodeToFilteredBitmap(bit_mask, batch_size, func, batchFunc);
+    return num_decoded;
+  }
+
+  int64_t GetFilteredCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
+                            bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+    int64_t num_decoded = current_decoder_->DecodeToFilteredCompressedBitmap(
+        bit_mask, batch_size, func, batchFunc);
+    return num_decoded;
+  }
+
+  int64_t GetFilteredAndedCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                      int batch_size, int offset, bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+    int64_t num_decoded = 
+        current_decoder_->DecodeToFilteredAndedCompressedBitmap(
+        bit_mask, batch_size, offset, func, batchFunc);
+    return num_decoded;
+  }
+  int64_t GetBatchBasedOnCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                          T* values, int values_to_read) {
+    int64_t num_decoded = current_decoder_->DecodeBatchBasedOnCompressedBitmap(
+        bit_mask, values, values_to_read);
+
+    return num_decoded;
+  }
+
+   
+   
+
   // Read up to batch_size values from the current data page into the
   // pre-allocated memory T*, leaving spaces for null entries according
   // to the def_levels.
@@ -878,6 +912,26 @@ class TypedColumnReaderImpl : public TypedColumnReader<DType>,
                                   int64_t* indices_read, const T** dict,
                                   int32_t* dict_len) override;
 
+  int64_t ReadFilteredBitmap(int16_t* def_levels, int16_t* rep_levels,
+                             ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
+                             bool (*func)(T),
+                             void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&),
+                             int64_t* values_read) override;
+
+  int64_t ReadFilteredCompressedBitmap(int16_t* def_levels, int16_t* rep_levels,
+                                 ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+                                       void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&),
+                                       int64_t* values_read) override; 
+
+  int64_t ReadFilteredAndedCompressedBitmap(int16_t* def_levels, int16_t* rep_levels,
+                                 ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+                                 void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&),
+                                 int64_t* values_read) override; 
+
+  int64_t ReadBatchBasedOnCompressedBitmap(int16_t* def_levels, int16_t* rep_levels,
+                                           ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                           T* values, int batch_size,
+                                           int64_t* values_read) override;
  protected:
   void SetExposedEncoding(ExposedEncoding encoding) override {
     this->exposed_encoding_ = encoding;
@@ -981,33 +1035,156 @@ int64_t TypedColumnReaderImpl<DType>::ReadBatchWithDictionary(
 }
 
 template <typename DType>
+int64_t TypedColumnReaderImpl<DType>::ReadFilteredBitmap(
+    int16_t* def_levels, int16_t* rep_levels, ewah::BoolArray<uint32_t>& bit_mask,
+    int batch_size, bool (*func)(T),
+    void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&),
+    int64_t* values_read) {
+  *values_read = 0;
+  while (HasNext() && *values_read < batch_size) {
+    int64_t num_def_levels = 0;
+    int64_t values_to_read = 0;
+    ReadLevels(batch_size - *values_read, def_levels, rep_levels, &num_def_levels, &values_to_read);
+
+    int64_t values_read_on_page = this->GetFilteredBitmap(
+        bit_mask, static_cast<int>(values_to_read), func, batchFunc);
+
+    int64_t total_values = std::max(num_def_levels, values_read_on_page);
+    int64_t expected_values =
+        std::min(static_cast<int64_t>(batch_size - -*values_read),
+                 this->num_buffered_values_ - this->num_decoded_values_);
+    if (total_values == 0 && expected_values > 0) {
+      std::stringstream ss;
+      ss << "Read 0 values, expected " << expected_values;
+      ParquetException::EofException(ss.str());
+    }
+    this->ConsumeBufferedValues(total_values);
+    *values_read += total_values;
+  }
+
+  return *values_read;
+}
+
+
+template <typename DType>
+int64_t TypedColumnReaderImpl<DType>::ReadFilteredCompressedBitmap(
+    int16_t* def_levels, int16_t* rep_levels, ewah::EWAHBoolArray<uint32_t>& bit_mask,
+    int batch_size, bool (*func)(T),
+    void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&), int64_t* values_read) {
+  *values_read = 0;
+  // HasNext invokes ReadNewPage
+  while (HasNext() && *values_read < batch_size) {
+    int64_t num_def_levels = 0;
+    int64_t values_to_read = 0;
+    ReadLevels(batch_size - *values_read, def_levels, rep_levels, &num_def_levels, &values_to_read);
+
+    int64_t values_read_on_page = this->GetFilteredCompressedBitmap(
+        bit_mask, static_cast<int>(values_to_read), func, batchFunc);
+    int64_t total_values = std::max(num_def_levels, values_read_on_page);
+    int64_t expected_values =
+      std::min(batch_size - *values_read, this->num_buffered_values_ - this->num_decoded_values_);
+    if (total_values == 0 && expected_values > 0) {
+      std::stringstream ss;
+      ss << "Read 0 values, expected " << expected_values;
+      ParquetException::EofException(ss.str());
+    }
+    this->ConsumeBufferedValues(total_values);
+    *values_read += total_values;
+  }
+  bit_mask.resetIterator();
+
+  return *values_read;
+}
+
+
+template <typename DType>
+int64_t TypedColumnReaderImpl<DType>::ReadFilteredAndedCompressedBitmap(
+    int16_t* def_levels, int16_t* rep_levels, ewah::EWAHBoolArray<uint32_t>& bit_mask,
+    int batch_size, bool (*func)(T),
+    void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&), int64_t* values_read) {
+  *values_read = 0;
+  // HasNext invokes ReadNewPage
+  while (HasNext() && *values_read < batch_size) {
+    int64_t num_def_levels = 0;
+    int64_t values_to_read = 0;
+    ReadLevels(batch_size - *values_read, def_levels, rep_levels, &num_def_levels,
+               &values_to_read);
+
+    int64_t values_read_on_page = this->GetFilteredAndedCompressedBitmap(
+        bit_mask, static_cast<int>(values_to_read), static_cast<int>(*values_read), func, batchFunc);
+    int64_t total_values = std::max(num_def_levels, values_read_on_page);
+    int64_t expected_values =
+        std::min(batch_size - *values_read,
+                 this->num_buffered_values_ - this->num_decoded_values_);
+    if (total_values == 0 && expected_values > 0) {
+      std::stringstream ss;
+      ss << "Read 0 values, expected " << expected_values;
+      ParquetException::EofException(ss.str());
+    }
+    this->ConsumeBufferedValues(total_values);
+    *values_read += total_values;
+  }
+  bit_mask.resetIterator();
+
+  return *values_read;
+}
+
+template <typename DType>
+int64_t TypedColumnReaderImpl<DType>::ReadBatchBasedOnCompressedBitmap(
+    int16_t* def_levels, int16_t* rep_levels, ewah::EWAHBoolArray<uint32_t>& bit_mask, 
+    T* values, int batch_size, int64_t* values_read) {
+  *values_read = 0;
+  // HasNext invokes ReadNewPage
+  while (HasNext() && *values_read < batch_size) {
+    int64_t num_def_levels = 0;
+    int64_t values_to_read = 0;
+    ReadLevels(batch_size - *values_read, def_levels, rep_levels, &num_def_levels,
+               &values_to_read);
+
+    int64_t values_read_on_page = this->GetBatchBasedOnCompressedBitmap(
+        bit_mask, values + *values_read, static_cast<int>(values_to_read));
+    int64_t total_values = std::max(num_def_levels, values_read_on_page);
+    int64_t expected_values =
+        std::min(batch_size - *values_read,
+                 this->num_buffered_values_ - this->num_decoded_values_);
+    if (total_values == 0 && expected_values > 0) {
+      std::stringstream ss;
+      ss << "Read 0 values, expected " << expected_values;
+      ParquetException::EofException(ss.str());
+    }
+    this->ConsumeBufferedValues(total_values);
+    *values_read += total_values;
+  }
+  bit_mask.resetIterator();
+
+  return bit_mask.numberOfOnes();
+}
+
+template <typename DType>
 int64_t TypedColumnReaderImpl<DType>::ReadBatch(int64_t batch_size, int16_t* def_levels,
                                                 int16_t* rep_levels, T* values,
                                                 int64_t* values_read) {
+  *values_read = 0;
   // HasNext invokes ReadNewPage
-  if (!HasNext()) {
-    *values_read = 0;
-    return 0;
+  while (HasNext() && *values_read < batch_size) {
+    int64_t num_def_levels = 0;
+    int64_t values_to_read = 0;
+    ReadLevels(batch_size - *values_read, def_levels, rep_levels, &num_def_levels, &values_to_read);
+
+    int64_t values_read_on_page = this->ReadValues(values_to_read, values + *values_read);
+    int64_t total_values = std::max(num_def_levels, values_read_on_page);
+    int64_t expected_values =
+      std::min(batch_size - *values_read, this->num_buffered_values_ - this->num_decoded_values_);
+    if (total_values == 0 && expected_values > 0) {
+      std::stringstream ss;
+      ss << "Read 0 values, expected " << expected_values;
+      ParquetException::EofException(ss.str());
+    }
+    this->ConsumeBufferedValues(total_values);
+    *values_read += total_values;
   }
 
-  // TODO(wesm): keep reading data pages until batch_size is reached, or the
-  // row group is finished
-  int64_t num_def_levels = 0;
-  int64_t values_to_read = 0;
-  ReadLevels(batch_size, def_levels, rep_levels, &num_def_levels, &values_to_read);
-
-  *values_read = this->ReadValues(values_to_read, values);
-  int64_t total_values = std::max(num_def_levels, *values_read);
-  int64_t expected_values =
-      std::min(batch_size, this->num_buffered_values_ - this->num_decoded_values_);
-  if (total_values == 0 && expected_values > 0) {
-    std::stringstream ss;
-    ss << "Read 0 values, expected " << expected_values;
-    ParquetException::EofException(ss.str());
-  }
-  this->ConsumeBufferedValues(total_values);
-
-  return total_values;
+  return *values_read;
 }
 
 template <typename DType>

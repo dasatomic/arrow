@@ -21,12 +21,14 @@
 #include <cstring>
 #include <memory>
 #include <vector>
+#include <bitset>
 
 #include "arrow/util/spaced.h"
 
 #include "parquet/exception.h"
 #include "parquet/platform.h"
 #include "parquet/types.h"
+#include "../ewah/ewah.h"
 
 namespace arrow {
 
@@ -304,6 +306,35 @@ class TypedDecoder : virtual public Decoder {
     }
   }
 
+  // Decoder that returns bit map where ones represent that 
+  // value satisfies condition given by the function 
+  virtual int DecodeToFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
+                                     bool (*func)(T),
+                                     void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) {
+    throw ParquetException("Filter pushdown not implemented for this type of encoding");
+    return 0;
+  }
+
+  virtual int DecodeToFilteredCompressedBitmap(
+      ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+      void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+    throw ParquetException("Filter pushdown not implemented for this type of encoding");
+    return 0;
+  }
+
+  virtual int DecodeToFilteredAndedCompressedBitmap(
+      ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset,
+      bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+    throw ParquetException("Filter pushdown not implemented for this type of encoding");
+    return 0;
+  }
+
+  virtual int DecodeBatchBasedOnCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                                 T* values, int batch_size) {
+    throw ParquetException("Filter pushdown not implemented for this type of encoding");
+    return 0;
+  }
+
   /// \brief Decode into an ArrayBuilder or other accumulator
   ///
   /// This function assumes the definition levels were already decoded
@@ -345,6 +376,7 @@ class TypedDecoder : virtual public Decoder {
                          typename EncodingTraits<DType>::DictAccumulator* builder) {
     return DecodeArrow(num_values, 0, /*valid_bits=*/NULLPTR, 0, builder);
   }
+
 };
 
 template <typename DType>

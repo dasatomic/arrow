@@ -49,6 +49,7 @@
 #include "parquet/platform.h"
 #include "parquet/schema.h"
 #include "parquet/types.h"
+#include "../ewah/ewah.h"
 
 namespace bit_util = arrow::bit_util;
 
@@ -979,6 +980,20 @@ class PlainDecoder : public DecoderImpl, virtual public TypedDecoder<DType> {
   int DecodeArrow(int num_values, int null_count, const uint8_t* valid_bits,
                   int64_t valid_bits_offset,
                   typename EncodingTraits<DType>::DictAccumulator* builder) override;
+
+  int DecodeToFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
+                             bool (*func)(T),
+                             void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) override;
+
+  int DecodeToFilteredCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size,
+                             bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override;
+
+  int DecodeToFilteredAndedCompressedBitmap(
+      ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset,
+      bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override;
+
+  int DecodeBatchBasedOnCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, T* values,
+                                      int batch_size) override;
 };
 
 template <>
@@ -1055,6 +1070,119 @@ int PlainDecoder<DType>::DecodeArrow(
   num_values_ -= values_decoded;
   len_ -= sizeof(value_type) * values_decoded;
   return values_decoded;
+}
+
+template <typename DType>
+int PlainDecoder<DType>::DecodeToFilteredBitmap(
+    ewah::BoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+    void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) {
+  constexpr int kBufferSize = 10240;
+  T out[kBufferSize];
+  int values_read_in_prev_page = static_cast<int>(bit_mask.sizeInBits());
+  int decoded_values = 0;
+
+  while (num_values_ > 0 && batch_size > decoded_values) {
+    int values_to_read = std::min(kBufferSize, batch_size - decoded_values);
+    int num_values = this->Decode(out, values_to_read);
+    bit_mask.padWithZeroes(values_read_in_prev_page + decoded_values);
+
+    batchFunc(out, num_values, bit_mask);
+
+  }
+   
+  bit_mask.padWithZeroes(decoded_values + values_read_in_prev_page);
+
+  return decoded_values;
+}
+
+template <typename DType>
+int PlainDecoder<DType>::DecodeToFilteredCompressedBitmap(
+    ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+    void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+  constexpr int kBufferSize = 10240;
+  T out[kBufferSize];
+  int values_read_in_prev_page = static_cast<int>(bit_mask.sizeInBits());
+  int decoded_values = 0;
+
+  while (num_values_ > 0 && batch_size > decoded_values) {
+    int values_to_read = std::min(kBufferSize, batch_size - decoded_values);
+    int num_values = this->Decode(out, values_to_read);
+    bit_mask.padWithZeroes(values_read_in_prev_page + decoded_values);
+
+    batchFunc(out, num_values, bit_mask);
+  }
+
+  bit_mask.padWithZeroes(decoded_values + values_read_in_prev_page);
+
+  return decoded_values;
+}
+
+template <typename DType>
+int PlainDecoder<DType>::DecodeToFilteredAndedCompressedBitmap(
+    ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset, bool (*func)(T),
+    void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) {
+  ewah::EWAHBoolArray<uint32_t> filtered_bitmap;
+  if (offset > 0) filtered_bitmap.fastaddStreamOfBits(true, offset);
+
+  constexpr int kBufferSize = 10240;
+  T out[kBufferSize];
+
+  int decoded_values = 0;
+
+  while (num_values_ > 0 && batch_size > decoded_values) {
+    int values_to_read = batch_size - decoded_values;
+    int num_values = 0;
+    if (bit_mask.numberOfUpcomingOnes() > 0) {
+      values_to_read = 
+       std::min(values_to_read, static_cast<int>(bit_mask.numberOfUpcomingOnes()));
+      values_to_read = std::min(values_to_read, kBufferSize);
+      num_values = this->Decode(out, values_to_read);
+      filtered_bitmap.padWithZeroes(offset + decoded_values);
+
+      batchFunc(out, num_values, bit_mask);
+    } else {
+      values_to_read =
+       std::min(values_to_read, static_cast<int> (bit_mask.numberOfUpcomingZeros()));
+      num_values = std::min(values_to_read, num_values_);
+      int bytes_to_skip =  num_values * sizeof(T);
+
+      data_ += bytes_to_skip;
+      len_ -= bytes_to_skip;
+      num_values_ -= num_values;
+    }
+
+    decoded_values += num_values;
+    bit_mask.skipBits(values_to_read);
+  }
+
+  filtered_bitmap.padWithOnes(bit_mask.sizeInBits());
+
+  bit_mask = bit_mask.logicaland(filtered_bitmap);
+
+  return decoded_values;
+}
+
+template <typename DType>
+int PlainDecoder<DType>::DecodeBatchBasedOnCompressedBitmap(
+    ewah::EWAHBoolArray<uint32_t>& bit_mask, T* values, int batch_size) {
+  int max_values = std::min(batch_size, num_values_);
+  int values_read = 0;
+  int values_decoded = 0;
+  while (values_read < max_values) {
+    int upcoming_values =  std::min((int)bit_mask.numberOfUpcomingOnes(), max_values - values_read);
+    if (upcoming_values > 0) {
+      DecodePlain<T>(data_, len_, upcoming_values, type_length_, values + values_decoded);
+      values_decoded += upcoming_values;
+    }
+    if (upcoming_values == 0) upcoming_values = std::min((int)bit_mask.numberOfUpcomingZeros(), max_values - values_read);
+    bit_mask.skipBits(upcoming_values);
+    int bytes_consumed = upcoming_values * sizeof(T);
+    data_ += bytes_consumed;
+    len_ -= bytes_consumed;
+    num_values_ -= upcoming_values;
+    values_read += upcoming_values;
+  }
+  return max_values;
 }
 
 // Decode routine templated on C++ type rather than type enum
@@ -1591,6 +1719,57 @@ class DictDecoderImpl : public DecoderImpl, virtual public DictDecoder<Type> {
   void GetDictionary(const T** dictionary, int32_t* dictionary_length) override {
     *dictionary_length = dictionary_length_;
     *dictionary = reinterpret_cast<T*>(dictionary_->mutable_data());
+  }
+
+  int DecodeToFilteredBitmap(ewah::BoolArray<uint32_t>& bit_mask, int batch_size,
+                             bool (*func)(T),
+                             void (*batchFunc)(T*, int, ewah::BoolArray<uint32_t>&)) override {
+    int num_values = std::min(num_values_, batch_size);
+    int decoded_values = idx_decoder_.GetFilteredBitmapWithDict(
+        reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
+        num_values, func, batchFunc);
+    if (decoded_values != num_values) {
+      ParquetException::EofException();
+    }
+    num_values_ -= num_values;
+    return num_values;
+  }
+
+  int DecodeToFilteredCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+      void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override {
+    int num_values = std::min(num_values_, batch_size);
+    int decoded_values = idx_decoder_.GetFilteredCompressedBitmapWithDict(
+        reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
+        num_values, func, batchFunc);
+    if (decoded_values != num_values) {
+      ParquetException::EofException();
+    }
+    num_values_ -= num_values;
+    return num_values;
+  }
+
+  int DecodeToFilteredAndedCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, int offset,
+      bool (*func)(T), void (*batchFunc)(T*, int, ewah::EWAHBoolArray<uint32_t>&)) override {
+    int num_values = std::min(num_values_, batch_size);
+    int decoded_values = idx_decoder_.GetFilteredAndedCompressedBitmapWithDict(
+        reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask,
+        num_values, offset, func, batchFunc);
+    if (decoded_values != num_values) {
+      ParquetException::EofException();
+    }
+    num_values_ -= num_values;
+    return num_values;
+  }
+  int DecodeBatchBasedOnCompressedBitmap(ewah::EWAHBoolArray<uint32_t>& bit_mask, T* values,
+      int batch_size) override {
+    int num_values = std::min(num_values_, batch_size);
+    int decoded_values = idx_decoder_.GetBatchBasedOnCompressedBitmapWithDict(
+        reinterpret_cast<const T*>(dictionary_->data()), dictionary_length_, bit_mask, values, num_values);
+    if (decoded_values != num_values) {
+      ParquetException::EofException();
+    }
+    num_values_ -= num_values;
+    return num_values;
   }
 
  protected:

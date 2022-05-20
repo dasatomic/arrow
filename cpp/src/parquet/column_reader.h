@@ -21,12 +21,14 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <bitset>
 
 #include "parquet/exception.h"
 #include "parquet/level_conversion.h"
 #include "parquet/platform.h"
 #include "parquet/schema.h"
 #include "parquet/types.h"
+#include "../ewah/ewah.h"
 
 namespace arrow {
 
@@ -244,6 +246,26 @@ class TypedColumnReader : public ColumnReader {
                                           int16_t* rep_levels, int32_t* indices,
                                           int64_t* indices_read, const T** dict,
                                           int32_t* dict_len) = 0;
+
+  // Reads filtered bit map where ones represent correcponding 
+  // value satisfies condition represent by given function 
+  virtual int64_t ReadFilteredBitmap(int16_t* def_levels, int16_t* rep_levels,
+                                     ewah::BoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+                                     void (*func1)(T*, int, ewah::BoolArray<uint32_t>&), int64_t* values_read) = 0;
+
+  virtual int64_t ReadFilteredCompressedBitmap(int16_t* def_levels, int16_t* rep_levels,
+                                     ewah::EWAHBoolArray<uint32_t>& bit_mask, int batch_size, bool (*func)(T),
+                                     void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&), int64_t* values_read) = 0;
+
+  virtual int64_t ReadFilteredAndedCompressedBitmap(int16_t* def_levels, int16_t* rep_levels,
+                                         ewah::EWAHBoolArray<uint32_t>& bit_mask,
+                                         int batch_size, bool (*func)(T),
+                                         void (*func1)(T*, int, ewah::EWAHBoolArray<uint32_t>&),
+                                         int64_t* values_read) = 0;
+
+  virtual int64_t ReadBatchBasedOnCompressedBitmap(
+      int16_t* def_levels, int16_t* rep_levels, ewah::EWAHBoolArray<uint32_t>& bit_mask,
+      T* values, int batch_size, int64_t* values_read) = 0;
 };
 
 namespace internal {
